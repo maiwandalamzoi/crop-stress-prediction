@@ -15,7 +15,9 @@ from pathlib import Path
 import folium
 import joblib
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import shap
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -81,6 +83,37 @@ def build_matrix(df, feature_columns):
     return X
 
 
+@st.cache_resource
+def build_explainer(model_name):
+    pipe = load_model(model_name)
+    return shap.TreeExplainer(pipe.named_steps["clf"])
+
+
+def explain_one_row(model_name, feature_columns, row_df):
+    """
+    Real per-prediction SHAP breakdown: how much each feature actually pushed
+    this one row's prediction away from the model's average. Random Forest's
+    TreeExplainer returns values already in probability space (one array per
+    class); XGBoost's returns log-odds (its native training objective) --
+    both are handled and reported honestly in whichever unit shap chooses,
+    with a note converting back to a real probability.
+    """
+    pipe = load_model(model_name)
+    row_X = build_matrix(row_df, feature_columns)  # same one-hot encoding as every other prediction
+    row_imputed = pipe.named_steps["impute"].transform(row_X.values)
+    explainer = build_explainer(model_name)
+    sv = explainer(row_imputed)
+    sv.feature_names = feature_columns
+    values = np.array(sv.values)
+    if values.ndim == 3:  # (n_rows, n_features, n_classes) -- Random Forest
+        single = sv[0, :, 1]
+        is_probability_space = True
+    else:  # (n_rows, n_features) -- XGBoost, single log-odds output
+        single = sv[0]
+        is_probability_space = False
+    return single, is_probability_space
+
+
 def main():
     st.title("🌾 Crop Stress Prediction from Satellite Data")
     st.caption(
@@ -117,8 +150,9 @@ def main():
 
     latest = df_f.sort_values("period_start").groupby("name").tail(1)
 
-    tab_map, tab_timeseries, tab_compare, tab_coverage = st.tabs(
-        ["🗺️ Map (latest period)", "📈 Location history", "🌍 Country comparison", "📅 Data coverage"]
+    tab_map, tab_timeseries, tab_compare, tab_coverage, tab_explain = st.tabs(
+        ["🗺️ Map (latest period)", "📈 Location history", "🌍 Country comparison",
+         "📅 Data coverage", "🧮 How a prediction is made"]
     )
 
     with tab_map:
@@ -148,7 +182,7 @@ def main():
         st.dataframe(
             loc_df[["period_start", "NDVI_lag1", "ndvi_zscore", "stress", "pred_stress", "pred_stress_prob"]]
             .sort_values("period_start", ascending=False).head(20),
-            use_container_width=True,
+            width="stretch",
         )
 
     with tab_compare:
@@ -164,7 +198,7 @@ def main():
         st.subheader("Per-country test-set performance (2023-2024)")
         pc = pd.DataFrame(metrics["per_country_test_metrics"]).T
         pc.index.name = "country"
-        st.dataframe(pc, use_container_width=True)
+        st.dataframe(pc, width="stretch")
 
         st.subheader("NDVI seasonal profile by country")
         seasonal = df.copy()
@@ -219,6 +253,82 @@ def main():
             "32, 48, 64+ days are stretches where one or more whole 16-day windows had zero "
             "cloud-free pixels in a row and got skipped -- longest gap in this dataset: "
             f"{int(raw_sat['gap_days'].max())} days."
+        )
+
+    with tab_explain:
+        st.subheader("Step by step: how one prediction gets calculated")
+        st.markdown(
+            "1. **Raw satellite bands** (Sentinel-2, previous 16-day period) become vegetation "
+            "indices: NDVI, EVI, SAVI, NDMI (`extract_satellite.py`).\n"
+            "2. Those combine with **weather** accumulated over the same prior period(s), plus "
+            "engineered signal: NDVI/EVI trend, a 3-period rolling average, whether the field "
+            "was *already* stressed last period (`stress_lag1`), and weather anomalies vs. that "
+            "location's own climate history (`build_features.py`).\n"
+            "3. That's **43 numbers** total (after turning country/climate-zone into 0/1 "
+            "columns) -- the model's actual input for one row.\n"
+            "4. Missing values (a few percent, mostly at the start of a location's history) are "
+            "filled with the training-set median.\n"
+            "5. The trained model -- hundreds of decision trees, combined -- turns those 43 "
+            "numbers into a **stress probability** between 0 and 1.\n"
+            "6. That probability is compared against the model's tuned decision threshold "
+            f"(**{m['decision_threshold']:.2f}**, not the default 0.5) -- above it: predicted "
+            "stress; below: predicted no-stress."
+        )
+
+        st.markdown("**Pick one real (location, period) to see exactly how steps 5-6 happened for it:**")
+        ec1, ec2 = st.columns(2)
+        loc_e = ec1.selectbox("Location", sorted(df["name"].unique()), key="explain_loc")
+        loc_e_df = df[df["name"] == loc_e].sort_values("period_start", ascending=False)
+        period_labels = loc_e_df["period_start"].dt.date.astype(str).tolist()
+        period_e = ec2.selectbox("Period", period_labels, key="explain_period")
+        row = loc_e_df[loc_e_df["period_start"].dt.date.astype(str) == period_e].iloc[[0]]
+
+        single, is_prob_space = explain_one_row(model_name, feature_columns, row)
+        final_val = float(single.base_values) + float(np.sum(single.values))
+        final_proba = final_val if is_prob_space else 1 / (1 + np.exp(-final_val))
+        predicted_label = "STRESS" if final_proba >= m["decision_threshold"] else "no stress"
+        actual_label = "stress" if int(row["stress"].iloc[0]) == 1 else "no stress"
+
+        fig = plt.figure(figsize=(9, 6))
+        shap.plots.waterfall(single, show=False, max_display=12)
+        fig = plt.gcf()
+        st.pyplot(fig)
+        plt.close(fig)
+
+        units_note = (
+            "Bars are in real probability units."
+            if is_prob_space else
+            f"Bars are in log-odds units (XGBoost's native training scale) -- converting the "
+            f"final total to probability: sigmoid({final_val:.3f}) = {final_proba:.1%}."
+        )
+        st.caption(
+            f"🔴/pink bars pushed this prediction toward 'stress'; 🔵 blue bars pushed toward "
+            f"'no stress'. {units_note} Final predicted probability: **{final_proba:.1%}**, "
+            f"vs. threshold **{m['decision_threshold']:.0%}** → predicted **{predicted_label}** "
+            f"(what actually happened at {loc_e} that period: **{actual_label}**)."
+        )
+
+        st.divider()
+        st.subheader("Random Forest vs. XGBoost — what's actually different")
+        st.markdown(
+            "Both are **decision-tree ensembles** (many trees, not one), but they build and "
+            "combine those trees in fundamentally different ways:\n\n"
+            "- **Random Forest — bagging.** Builds many trees *independently and in parallel*, "
+            "each on a random subset of rows and features, then **averages** all their votes. "
+            "No tree ever sees another tree's mistakes. This makes it hard to overfit and "
+            "gives stable, probability-native outputs, but it can't specifically correct the "
+            "errors its own trees are making.\n"
+            "- **XGBoost — gradient boosting.** Builds trees *one at a time, sequentially*: "
+            "every new tree is trained specifically to correct the residual errors of all the "
+            "trees built so far, with explicit regularization (`reg_lambda` in this project's "
+            "tuned params) to keep that error-chasing from overfitting. Outputs are in "
+            "log-odds space, summed across trees, and only converted to a probability at the "
+            "very end (the sigmoid step above).\n\n"
+            f"**On this dataset**, that difference mattered only a little: XGBoost came out "
+            f"slightly ahead (test F1 {metrics['xgboost']['test_f1_stress']:.3f} vs. Random "
+            f"Forest's {metrics['random_forest']['test_f1_stress']:.3f}) after both were tuned "
+            "the same way (5-fold CV hyperparameter search + threshold tuning) -- essentially "
+            "a statistical tie, not a decisive win for boosting."
         )
 
 
