@@ -62,28 +62,37 @@ def load_weather():
     return agg
 
 
-def add_stress_labels(df):
-    """Leave-one-year-out NDVI z-score anomaly per (name, period_of_year)."""
-    z_scores = np.full(len(df), np.nan)
-    labels = np.full(len(df), np.nan)
-
-    for (name, poy), grp in df.groupby(["name", "period_of_year"]):
-        years = grp["year"].values
-        ndvi = grp["NDVI"].values
+def leave_one_year_out_zscore(df, value_col, group_cols=("name", "period_of_year"),
+                               year_col="year", min_years=MIN_BASELINE_YEARS):
+    """
+    Generic leave-one-year-out z-score: for each row, compare its value against
+    the mean/std of the *other* years at the same (group_cols) bucket. Used for
+    both the NDVI stress label and the weather anomaly features below, so a
+    weather reading is judged against that same location's own climatology,
+    not a fixed threshold that would conflate Afghanistan's climate with the
+    Netherlands' or New Zealand's.
+    """
+    z = np.full(len(df), np.nan)
+    for _, grp in df.groupby(list(group_cols)):
+        years = grp[year_col].values
+        vals = grp[value_col].values
         idx = grp.index.values
         for i, y in enumerate(years):
-            others = ndvi[years != y]
-            if len(others) < MIN_BASELINE_YEARS:
+            others = vals[years != y]
+            if len(others) < min_years:
                 continue
             mu, sigma = others.mean(), others.std(ddof=1)
             if sigma == 0 or np.isnan(sigma):
                 continue
-            z = (ndvi[i] - mu) / sigma
-            z_scores[idx[i]] = z
-            labels[idx[i]] = 1 if z <= Z_STRESS_THRESHOLD else 0
+            z[idx[i]] = (vals[i] - mu) / sigma
+    return z
 
+
+def add_stress_labels(df):
+    """Leave-one-year-out NDVI z-score anomaly per (name, period_of_year)."""
+    z_scores = leave_one_year_out_zscore(df, "NDVI")
     df["ndvi_zscore"] = z_scores
-    df["stress"] = labels
+    df["stress"] = np.where(np.isnan(z_scores), np.nan, (z_scores <= Z_STRESS_THRESHOLD).astype(float))
     return df
 
 
@@ -96,6 +105,18 @@ def add_lag_features(df):
     df["gap_days"] = (df["period_start"] - df["prev_period_start"]).dt.days
     df["ndvi_trend"] = df["NDVI_lag1"] - df["NDVI_lag2"]
     df["evi_trend"] = df["EVI_lag1"] - df["EVI_lag2"]
+
+    # Stress persistence: was the PREVIOUS period already flagged as stressed?
+    # Known at prediction time (it's t-1's label, computed from t-1 data only),
+    # and a strong prior given that drought/heat stress tends to be autocorrelated.
+    df["stress_lag1"] = df.groupby("name")["stress"].shift(1)
+
+    # Rolling NDVI/EVI stats over the last up-to-3 valid PRIOR periods (excludes
+    # the current period itself -- shift(1) first, then roll over the past).
+    grp = df.groupby("name")
+    df["ndvi_roll_mean3"] = grp["NDVI"].transform(lambda s: s.shift(1).rolling(3, min_periods=2).mean())
+    df["ndvi_roll_std3"] = grp["NDVI"].transform(lambda s: s.shift(1).rolling(3, min_periods=2).std())
+    df["evi_roll_mean3"] = grp["EVI"].transform(lambda s: s.shift(1).rolling(3, min_periods=2).mean())
     return df
 
 
@@ -105,10 +126,19 @@ def main():
     sat = add_lag_features(sat)
 
     weather = load_weather()
-    # Weather features are for the PRIOR period (lag1), matched by that
-    # period's own (name, year, period_of_year).
+    # Weather anomaly relative to this location's own climatology at this
+    # time of year -- e.g. a 30C day means something very different in
+    # Nimroz (Afghanistan) than in Groningen (Netherlands); the anomaly
+    # normalizes for that the same way the NDVI stress label does.
+    weather["tmax_anom"] = leave_one_year_out_zscore(weather, "tmax_mean")
+    weather["precip_anom"] = leave_one_year_out_zscore(weather, "precip_sum")
+
+    # Weather features are for the PRIOR period (lag1) and the one before
+    # that (lag2), matched by that period's own (name, year, period_of_year).
     sat["lag1_year"] = sat.groupby("name")["year"].shift(1)
     sat["lag1_poy"] = sat.groupby("name")["period_of_year"].shift(1)
+    sat["lag2_year"] = sat.groupby("name")["year"].shift(2)
+    sat["lag2_poy"] = sat.groupby("name")["period_of_year"].shift(2)
 
     merged = sat.merge(
         weather,
@@ -117,6 +147,23 @@ def main():
         how="left",
         suffixes=("", "_w"),
     )
+    merged = merged.merge(
+        weather[["name", "country", "year", "period_of_year",
+                  "precip_sum", "heat_days", "dry_days", "et0_sum"]],
+        left_on=["name", "country", "lag2_year", "lag2_poy"],
+        right_on=["name", "country", "year", "period_of_year"],
+        how="left",
+        suffixes=("", "_lag2"),
+    )
+
+    # Cumulative weather over the last TWO periods (~4 weeks) -- a single dry,
+    # hot 16-day window is noisier evidence of building drought/heat stress
+    # than two consecutive ones, so this should be a more stable signal than
+    # the single-prior-period weather features alone.
+    merged["precip_sum_2p"] = merged["precip_sum"] + merged["precip_sum_lag2"]
+    merged["heat_days_2p"] = merged["heat_days"] + merged["heat_days_lag2"]
+    merged["dry_days_2p"] = merged["dry_days"] + merged["dry_days_lag2"]
+    merged["et0_sum_2p"] = merged["et0_sum"] + merged["et0_sum_lag2"]
 
     # Cyclical month-of-year encoding for the CURRENT (target) period.
     merged["month"] = merged["period_start"].dt.month
@@ -126,8 +173,12 @@ def main():
     feature_cols = [
         "NDVI_lag1", "EVI_lag1", "SAVI_lag1", "NDMI_lag1",
         "ndvi_trend", "evi_trend",
+        "ndvi_roll_mean3", "ndvi_roll_std3", "evi_roll_mean3",
+        "stress_lag1",
         "tmax_mean", "tmin_mean", "precip_sum", "humidity_mean", "et0_sum",
         "heat_days", "dry_days", "frost_days",
+        "tmax_anom", "precip_anom",
+        "precip_sum_2p", "heat_days_2p", "dry_days_2p", "et0_sum_2p",
         "lat", "lon", "month_sin", "month_cos",
         "country", "climate_zone",
     ]
@@ -137,11 +188,18 @@ def main():
 
     out = merged[keep_cols].copy()
 
+    # Required (dropped if missing): the label itself, and the core t-1
+    # satellite/weather signal every row must have. Optional signals with
+    # more missingness (2-period cumulative weather, rolling stats,
+    # stress_lag1) are allowed to be NaN and imputed at train time instead
+    # of dropping rows over them -- they need 2-3 valid prior periods, which
+    # costs rows especially at the start of each location's history.
+    required = ["stress", "NDVI_lag1", "tmax_mean"]
     before = len(out)
-    out = out.dropna(subset=["stress", "NDVI_lag1", "tmax_mean"])
+    out = out.dropna(subset=required)
     out = out[out["gap_days"] <= MAX_LAG_GAP_DAYS]
     after = len(out)
-    print(f"Rows before filtering: {before}, after dropping missing lag/label/weather "
+    print(f"Rows before filtering: {before}, after dropping missing {required} "
           f"and gaps > {MAX_LAG_GAP_DAYS}d: {after}")
 
     out["stress"] = out["stress"].astype(int)
@@ -149,6 +207,10 @@ def main():
     print(out["stress"].value_counts(normalize=True).rename("share"))
     print("\nRows per country:")
     print(out["country"].value_counts())
+    print("\nMissingness in optional engineered features (imputed at train time):")
+    optional = ["stress_lag1", "ndvi_roll_mean3", "ndvi_roll_std3", "evi_roll_mean3",
+                "tmax_anom", "precip_anom", "precip_sum_2p", "heat_days_2p", "dry_days_2p", "et0_sum_2p"]
+    print(out[optional].isna().mean().rename("share_missing"))
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(OUT_PATH, index=False)
