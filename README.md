@@ -61,69 +61,84 @@ Full coordinate list: [`src/locations.py`](src/locations.py).
      NDVI baseline (mean, std) from the *other* years of data at that same point and time of
      year, then flags `stress = 1` if the current year's NDVI z-score against that baseline
      is ≤ −1.0 (roughly the bottom ~16% of that location's own seasonal distribution).
-   - **Features**: the *previous* period's NDVI/EVI/SAVI/NDMI, the NDVI/EVI trend into that
-     period, and weather accumulated over that same prior period — i.e. everything a model
-     would actually have in hand 2–4 weeks before the target period, avoiding same-period
-     leakage. Plus static context: country, climate zone, latitude/longitude, cyclical
-     month-of-year encoding.
-4. **`src/train.py`** — trains a **Random Forest** and an **XGBoost** classifier.
+   - **Features**: the *previous* period's NDVI/EVI/SAVI/NDMI and their trend into that
+     period, rolling 3-period NDVI/EVI mean & std, whether the *previous* period was itself
+     flagged as stressed (`stress_lag1` — persistence), weather accumulated over the prior
+     period and over the prior *two* periods, and two weather-anomaly features
+     (`tmax_anom`, `precip_anom`) built with the **same** leave-one-year-out z-score as the
+     label, so a hot day is judged against that location's own climatology rather than a
+     fixed threshold that would conflate Afghanistan's climate with the Netherlands'. Plus
+     static context: country, climate zone, latitude/longitude, cyclical month-of-year
+     encoding. Everything is knowable 2–4 weeks before the target period — no same-period
+     leakage.
+4. **`src/train.py`** — trains a **Random Forest** and an **XGBoost** classifier, each as a
+   median-impute → classifier pipeline (the engineered rolling/lag features have modest
+   missingness, ≤6%, at the start of each location's history).
    - Time-based split: train on 2019–2022, test on 2023–2024 (no future data leaks into
      training).
-   - 5-fold stratified cross-validation on the training set as an independent robustness
-     check.
-   - `class_weight="balanced"` (RF) / `scale_pos_weight` (XGBoost) to handle the class
-     imbalance from the ~21% stress base rate.
+   - `RandomizedSearchCV`, 5-fold stratified CV, 40 iterations per model, scoring = F1 on
+     the stress class — not accuracy, which would just reward predicting the majority class.
+   - **Decision-threshold tuning**: the default 0.5 cutoff isn't assumed optimal for a ~21%
+     base rate. The threshold that maximizes F1 is chosen from *training-set*
+     out-of-fold predictions (`cross_val_predict`), then applied once to the test set —
+     the test set never informs the threshold, same as the hyperparameters.
 5. **`src/evaluate.py`** — confusion matrices, feature importance, and cross-country
    comparison figures, written to `reports/`.
-6. **`app_streamlit.py`** — interactive map of predicted stress risk per field, per-location
-   NDVI history, and the country comparison.
+6. **`app_streamlit.py`** — interactive map of predicted stress risk per field (using the
+   same tuned threshold), per-location NDVI history, and the country comparison.
 
 ## Results
 
 Full numbers: [`reports/metrics.json`](reports/metrics.json) and [`reports/summary.md`](reports/summary.md).
-Dataset: 3,953 labeled (location, period) rows after feature/label engineering, 21.3% stress class.
+Dataset: 3,953 labeled (location, period) rows, 21.3% stress class.
 **Time-based split** — trained on 2019–2022 (2,728 rows, 21.6% stress), tested on 2023–2024
 (1,225 rows, 20.7% stress), so the test set is genuinely unseen future data, not a random
-shuffle of the same years.
+shuffle of the same years. Hyperparameters and decision threshold were both selected from
+training-set cross-validation only — the numbers below are the test set's *first and only*
+evaluation.
 
 We lead with **F1 on the stress class**, not raw accuracy: a trivial "always predict no
 stress" baseline already scores ~79% accuracy on this imbalanced label and would be useless
 for an early-warning system (it would never flag a single real stress event). Accuracy is
 reported alongside for context.
 
-| Model | Test accuracy | Test F1 (stress) | Test F1 (macro) | 5-fold CV F1 (train, mean ± std) |
-|---|---|---|---|---|
-| **Random Forest** (best) | 0.736 | **0.253** | 0.546 | 0.320 ± 0.009 |
-| XGBoost | 0.713 | 0.229 | 0.526 | 0.327 ± 0.030 |
+| Model | Test accuracy | Test F1 (stress) | Test F1 (macro) | Best CV F1 (tuning) | Decision threshold |
+|---|---|---|---|---|---|
+| **XGBoost** (best) | 0.722 | **0.405** | 0.612 | 0.454 | 0.50 |
+| Random Forest | 0.704 | 0.404 | 0.603 | 0.437 | 0.48 |
 
-Random Forest confusion matrix, test set (2023–2024, n=1,225):
+XGBoost confusion matrix, test set (2023–2024, n=1,225):
 
 | | Predicted no-stress | Predicted stress |
 |---|---|---|
-| **Actual no-stress** | 846 | 126 |
-| **Actual stress** | 198 | 55 |
+| **Actual no-stress** | 768 | 204 |
+| **Actual stress** | 137 | 116 |
 
-That's **precision 0.30** and **recall 0.22** on the stress class — it catches roughly 1 in 5
-real stress events 2–4 weeks ahead, with about 3 in 10 stress flags being real. That is a
-genuinely modest result, and it is reported as such: predicting a statistical vegetation
-anomaly weeks in advance from only satellite-index trajectory and weather is a hard problem,
-and this is a first honest baseline, not a tuned production model. See
-[`reports/figures/confusion_matrices.png`](reports/figures/confusion_matrices.png).
+That's **precision 0.36** and **recall 0.46** on the stress class — up from an earlier
+iteration of this pipeline (satellite/weather features only, default threshold, no
+hyperparameter search) that scored F1 0.229–0.253. The full history of that comparison is
+in the git log; nothing here was tuned against the test set to get there — see the
+methodology above. It now catches nearly 1 in 2 real stress events 2–4 weeks ahead, at the
+cost of a real but bounded false-positive rate. Still a modest number in absolute terms —
+this is an honest baseline for a genuinely hard problem, not a production model.
+See [`reports/figures/confusion_matrices.png`](reports/figures/confusion_matrices.png).
 
-**Top features** (Random Forest importance — full list in
-[`reports/feature_importance_random_forest.csv`](reports/feature_importance_random_forest.csv)):
-`NDVI_lag1`, `SAVI_lag1`, `EVI_lag1`, `ndvi_trend`, `humidity_mean`, `NDMI_lag1`, `tmin_mean`,
-`et0_sum`, `tmax_mean`, `precip_sum`. Importance is fairly evenly split between the prior
-satellite trajectory and the accumulated weather — neither dominates.
-See [`reports/figures/feature_importance.png`](reports/figures/feature_importance.png).
+**Top features** (both models — full lists in
+[`reports/feature_importance_random_forest.csv`](reports/feature_importance_random_forest.csv) /
+[`_xgboost.csv`](reports/feature_importance_xgboost.csv)): **`stress_lag1` dominates both
+models by a wide margin** (~19% importance each, roughly double the next-ranked feature) —
+whether a field was already stressed two weeks ago is the single strongest predictor of
+whether it still will be. After that: rolling/lagged NDVI-EVI trajectory, humidity, and the
+weather-anomaly features. See [`reports/figures/feature_importance.png`](reports/figures/feature_importance.png).
 
 ## Cross-country comparison
 
 New Zealand's growing season is offset ~6 months from Afghanistan and the Netherlands
-(Southern vs. Northern Hemisphere). Because the stress label is computed against each
-location's *own* multi-year seasonal baseline — not a shared calendar-month baseline — this
-offset does not bias the comparison; a New Zealand field in its December stress dip is
-compared to *other Decembers at that same field*, not to Afghan December conditions. See
+(Southern vs. Northern Hemisphere). Because the stress label — and now the weather anomaly
+features too — are computed against each location's *own* multi-year seasonal baseline, not
+a shared calendar-month baseline, this offset does not bias the comparison; a New Zealand
+field in its December stress dip is compared to *other Decembers at that same field*, not to
+Afghan December conditions. See
 [`reports/figures/ndvi_seasonality_by_country.png`](reports/figures/ndvi_seasonality_by_country.png)
 for the visible 6-month offset in each country's NDVI curve.
 
@@ -131,23 +146,25 @@ for the visible 6-month offset in each country's NDVI curve.
 2019–2024 dataset comes out at 21.3% for all three countries, essentially by construction —
 a per-location relative-anomaly threshold normalizes away most of the raw difference in how
 "stressed" each country's vegetation looks. So raw incidence isn't the interesting
-cross-country signal here; **predictability is**. Breaking the Random Forest's test-set
-performance out by country ([`reports/figures/stress_rate_by_country.png`](reports/figures/stress_rate_by_country.png)):
+cross-country signal here; **predictability is**. Breaking the best model's (XGBoost)
+test-set performance out by country ([`reports/figures/stress_rate_by_country.png`](reports/figures/stress_rate_by_country.png)):
 
 | Country | Test rows | Stress rate (test) | Accuracy | F1 (stress) |
 |---|---|---|---|---|
-| Afghanistan | 507 | 25.6% | 0.746 | **0.332** |
-| New Zealand | 393 | 15.8% | 0.720 | 0.214 |
-| Netherlands | 325 | 18.8% | 0.738 | 0.158 |
+| Afghanistan | 507 | 25.6% | 0.813 | **0.625** |
+| New Zealand | 393 | 15.8% | 0.659 | 0.264 |
+| Netherlands | 325 | 18.8% | 0.655 | 0.188 |
 
-Afghan field stress is the most predictable from the prior period's satellite trajectory and
-weather — plausible given Afghanistan's arid/rainfed systems, where a dry, hot period tends to
-be followed by a continuation of the same drought signature (persistent, autocorrelated
-stress). Dutch fields are the least predictable here, plausibly because intensive irrigation
-and drainage decouple short-term vegetation condition from the raw weather signal, and because
-denser Sentinel-2 cloud cover over the Netherlands leaves noisier composites. This is a
-read of a modest signal from 12 locations per country over 6 years, not a definitive claim
-about either country's agriculture.
+Afghan field stress is by far the most predictable — and the `stress_lag1` persistence
+feature is almost certainly why: in an arid/rainfed system, a dry, hot period tends to be
+followed by a continuation of the same drought signature, so "was it stressed two weeks ago"
+is a very strong prior. Dutch and New Zealand fields are much less predictable from that same
+signal, plausibly because intensive irrigation and drainage in both countries decouple
+short-term vegetation condition from persistence in the raw weather trajectory, breaking the
+autocorrelation the model leans on most. This reads as a genuine agronomic difference between
+actively-managed and rainfed systems, not a modeling artifact — but it's a read of a modest
+signal from 12 locations per country over 6 years, not a definitive claim about either
+country's agriculture.
 
 ## Reproduce it
 
