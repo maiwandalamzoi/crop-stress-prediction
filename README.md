@@ -174,6 +174,24 @@ Raw and processed data (`data/raw/*.csv`, `data/processed/features.csv`) and the
 models (`models/*.joblib`) are committed to this repo, so you can skip straight to
 `streamlit run app_streamlit.py` to explore the results without re-running extraction.
 
+## Deploy the Streamlit app
+
+`app_streamlit.py` reads only the committed CSVs and `.joblib` models — it never calls Earth
+Engine or Open-Meteo live, so it needs no secrets to deploy. To host it for free on
+[Streamlit Community Cloud](https://share.streamlit.io):
+
+1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with the
+   `maiwandalamzoi` GitHub account.
+2. Click **"New app"**.
+3. Repository: `maiwandalamzoi/crop-stress-prediction`, branch: `main`,
+   main file path: `app_streamlit.py`.
+4. Under **"Advanced settings"**, set the requirements file to
+   [`requirements-app.txt`](requirements-app.txt) instead of `requirements.txt` — it skips
+   `earthengine-api`/`matplotlib`/`requests`, which the app itself never imports, for a
+   noticeably faster build. (`requirements.txt` also works, just slower to build.)
+5. Click **Deploy**. Build takes a couple of minutes.
+6. You'll get a public URL (`https://<app-name>.streamlit.app`) to share.
+
 ## Limitations
 
 - The stress label is a **statistical proxy** (NDVI anomaly), not a ground-truthed disease or
