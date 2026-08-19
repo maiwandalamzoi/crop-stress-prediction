@@ -78,7 +78,8 @@ def main():
     m = metrics[model_name]
     st.sidebar.metric("Test accuracy (2023-2024)", f"{m['test_accuracy']:.1%}")
     st.sidebar.metric("Test F1, stress class", f"{m['test_f1_stress']:.3f}")
-    st.sidebar.metric("5-fold CV F1 (train)", f"{m['cv_f1_stress_mean']:.3f} ± {m['cv_f1_stress_std']:.3f}")
+    st.sidebar.metric("Best CV F1 (tuning)", f"{m['cv_f1_stress_mean']:.3f}")
+    st.sidebar.caption(f"Decision threshold: {m['decision_threshold']:.2f} (tuned on train, not 0.5 default)")
 
     countries = ["All"] + sorted(df["country"].unique().tolist())
     country_filter = st.sidebar.selectbox("Country", countries)
@@ -88,7 +89,10 @@ def main():
     X_all = build_matrix(df, feature_columns)
     df = df.copy()
     df["pred_stress_prob"] = model.predict_proba(X_all)[:, 1]
-    df["pred_stress"] = model.predict(X_all)
+    # Use the threshold tuned on training-set out-of-fold predictions (see
+    # train.py), not the model's naive 0.5 default, so displayed predictions
+    # match the reported test metrics.
+    df["pred_stress"] = (df["pred_stress_prob"] >= m["decision_threshold"]).astype(int)
     df_f = df if country_filter == "All" else df[df["country"] == country_filter]
 
     latest = df_f.sort_values("period_start").groupby("name").tail(1)
