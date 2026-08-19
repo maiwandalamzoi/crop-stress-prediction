@@ -6,6 +6,11 @@ public weather data, across three countries with very different agriculture: **A
 
 Author: **Maiwand Jan Alamzoi** — [m.alamzoi123@gmail.com](mailto:m.alamzoi123@gmail.com) · [github.com/maiwandalamzoi](https://github.com/maiwandalamzoi)
 
+**Live demo**: [vxc5hih7hibacl6cvhjxry.streamlit.app](https://vxc5hih7hibacl6cvhjxry.streamlit.app/)
+*(hosted on Streamlit Community Cloud's free tier as a restricted-viewer app —
+opening the link may prompt for a Streamlit account. Everything it shows is also
+reproducible locally in under a minute, no account needed — see [Reproduce it](#reproduce-it).)*
+
 ---
 
 ## Problem statement
