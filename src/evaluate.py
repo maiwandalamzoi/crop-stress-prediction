@@ -103,7 +103,8 @@ def main():
             f"- **{name}** — test accuracy: {m['test_accuracy']:.3f}, "
             f"test F1 (stress class): {m['test_f1_stress']:.3f}, "
             f"test F1 (macro): {m['test_f1_macro']:.3f}, "
-            f"5-fold CV F1: {m['cv_f1_stress_mean']:.3f} +/- {m['cv_f1_stress_std']:.3f}"
+            f"best CV F1 (tuning): {m['cv_f1_stress_mean']:.3f}, "
+            f"decision threshold: {m['decision_threshold']:.2f}"
         )
     lines.append("\n## Vegetation-stress incidence by country (all 2019-2024 periods)\n")
     for country, rate in rates.items():
