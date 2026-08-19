@@ -1,0 +1,127 @@
+{
+  "random_forest": {
+    "cv_accuracy_mean": 0.7335094263534631,
+    "cv_accuracy_std": 0.010529053619761879,
+    "cv_f1_stress_mean": 0.3200023310802733,
+    "cv_f1_stress_std": 0.009192280786928611,
+    "test_accuracy": 0.7355102040816327,
+    "test_f1_stress": 0.2534562211981567,
+    "test_f1_macro": 0.5463709677419355,
+    "confusion_matrix": [
+      [
+        846,
+        126
+      ],
+      [
+        198,
+        55
+      ]
+    ],
+    "classification_report": {
+      "no_stress": {
+        "precision": 0.8103448275862069,
+        "recall": 0.8703703703703703,
+        "f1-score": 0.8392857142857143,
+        "support": 972.0
+      },
+      "stress": {
+        "precision": 0.30386740331491713,
+        "recall": 0.21739130434782608,
+        "f1-score": 0.2534562211981567,
+        "support": 253.0
+      },
+      "accuracy": 0.7355102040816327,
+      "macro avg": {
+        "precision": 0.557106115450562,
+        "recall": 0.5438808373590982,
+        "f1-score": 0.5463709677419355,
+        "support": 1225.0
+      },
+      "weighted avg": {
+        "precision": 0.7057417350632385,
+        "recall": 0.7355102040816327,
+        "f1-score": 0.7182939904072229,
+        "support": 1225.0
+      }
+    }
+  },
+  "xgboost": {
+    "cv_accuracy_mean": 0.7214107604933294,
+    "cv_accuracy_std": 0.011270777563851385,
+    "cv_f1_stress_mean": 0.32694400013691394,
+    "cv_f1_stress_std": 0.02998890519322243,
+    "test_accuracy": 0.713469387755102,
+    "test_f1_stress": 0.22857142857142856,
+    "test_f1_macro": 0.5263157894736842,
+    "confusion_matrix": [
+      [
+        822,
+        150
+      ],
+      [
+        201,
+        52
+      ]
+    ],
+    "classification_report": {
+      "no_stress": {
+        "precision": 0.8035190615835777,
+        "recall": 0.845679012345679,
+        "f1-score": 0.8240601503759398,
+        "support": 972.0
+      },
+      "stress": {
+        "precision": 0.25742574257425743,
+        "recall": 0.20553359683794467,
+        "f1-score": 0.22857142857142856,
+        "support": 253.0
+      },
+      "accuracy": 0.713469387755102,
+      "macro avg": {
+        "precision": 0.5304724020789175,
+        "recall": 0.5256063045918118,
+        "f1-score": 0.5263157894736842,
+        "support": 1225.0
+      },
+      "weighted avg": {
+        "precision": 0.6907340740657344,
+        "recall": 0.713469387755102,
+        "f1-score": 0.7010735000767224,
+        "support": 1225.0
+      }
+    }
+  },
+  "best_model": "random_forest",
+  "per_country_test_metrics": {
+    "Netherlands": {
+      "n": 325,
+      "stress_rate": 0.18769230769230769,
+      "accuracy": 0.7384615384615385,
+      "f1_stress": 0.15841584158415842
+    },
+    "Afghanistan": {
+      "n": 507,
+      "stress_rate": 0.2564102564102564,
+      "accuracy": 0.7455621301775148,
+      "f1_stress": 0.3316062176165803
+    },
+    "New Zealand": {
+      "n": 393,
+      "stress_rate": 0.15776081424936386,
+      "accuracy": 0.7201017811704835,
+      "f1_stress": 0.21428571428571427
+    }
+  },
+  "train_rows": 2728,
+  "test_rows": 1225,
+  "train_years": [
+    2019,
+    2020,
+    2021,
+    2022
+  ],
+  "test_years": [
+    2023,
+    2024
+  ]
+}
