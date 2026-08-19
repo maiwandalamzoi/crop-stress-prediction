@@ -14,14 +14,20 @@ from pathlib import Path
 
 import folium
 import joblib
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
 ROOT = Path(__file__).resolve().parent
 FEATURES_PATH = ROOT / "data" / "processed" / "features.csv"
+RAW_DIR = ROOT / "data" / "raw"
 MODELS_DIR = ROOT / "models"
 REPORTS_DIR = ROOT / "reports"
+
+# From extract_satellite.py: 2019-01-01 to 2024-12-31 in 16-day steps.
+N_PERIODS_POSSIBLE = 137
+COUNTRY_COLORS = {"Afghanistan": "#c53030", "Netherlands": "#2b6cb0", "New Zealand": "#2f855a"}
 
 st.set_page_config(page_title="Crop Stress Prediction", layout="wide")
 
@@ -50,6 +56,20 @@ def load_feature_columns():
 def load_metrics():
     with open(REPORTS_DIR / "metrics.json") as f:
         return json.load(f)
+
+
+@st.cache_data
+def load_raw_satellite():
+    """
+    Every usable (cloud-free) Sentinel-2 composite actually pulled -- before
+    build_features.py drops rows for modeling. This is the honest picture of
+    how often a clean satellite reading was actually available, including the
+    gaps that get filtered out of the training data.
+    """
+    df = pd.read_csv(RAW_DIR / "sentinel2_timeseries.csv", parse_dates=["period_start"])
+    df = df.sort_values(["name", "period_start"]).reset_index(drop=True)
+    df["gap_days"] = df.groupby("name")["period_start"].diff().dt.days
+    return df
 
 
 def build_matrix(df, feature_columns):
@@ -97,8 +117,8 @@ def main():
 
     latest = df_f.sort_values("period_start").groupby("name").tail(1)
 
-    tab_map, tab_timeseries, tab_compare = st.tabs(
-        ["🗺️ Map (latest period)", "📈 Location history", "🌍 Country comparison"]
+    tab_map, tab_timeseries, tab_compare, tab_coverage = st.tabs(
+        ["🗺️ Map (latest period)", "📈 Location history", "🌍 Country comparison", "📅 Data coverage"]
     )
 
     with tab_map:
@@ -151,6 +171,55 @@ def main():
         seasonal["month"] = seasonal["period_start"].dt.month
         seasonal = seasonal.groupby(["month", "country"])["NDVI_lag1"].mean().unstack()
         st.line_chart(seasonal)
+
+    with tab_coverage:
+        st.subheader("How much usable satellite data did we actually get?")
+        raw_sat = load_raw_satellite()
+        n_locations = raw_sat["name"].nunique()
+        max_possible = N_PERIODS_POSSIBLE * n_locations
+        coverage = len(raw_sat) / max_possible
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Usable satellite composites", f"{len(raw_sat):,} / {max_possible:,}")
+        col2.metric("Overall coverage", f"{coverage:.1%}")
+        col3.metric("Normal cadence", "16 days")
+        st.caption(
+            "Sentinel-2 (2 satellites) revisits every ~5 days, but clouds make most individual "
+            "images unusable, so this pipeline groups images into 16-day windows and takes the "
+            "cloud-free median of whatever falls in each window. Some windows still end up with "
+            "zero clean pixels for a location -- those are skipped entirely, which is the real "
+            "source of the gaps below (not a bug: satellite optical imagery just can't see "
+            "through clouds)."
+        )
+
+        st.subheader(f"Valid readings captured per location (out of {N_PERIODS_POSSIBLE} possible, 2019-2024)")
+        counts = raw_sat.groupby(["country", "name"]).size().reset_index(name="valid_periods")
+        counts = counts.sort_values(["country", "valid_periods"])
+        fig, ax = plt.subplots(figsize=(9, 8))
+        labels = counts["name"] + " (" + counts["country"].str.slice(0, 2) + ")"
+        ax.barh(labels, counts["valid_periods"], color=counts["country"].map(COUNTRY_COLORS))
+        ax.axvline(N_PERIODS_POSSIBLE, color="#666", linestyle="--", linewidth=1)
+        ax.set_xlabel(f"Valid (cloud-free) composites out of {N_PERIODS_POSSIBLE} possible")
+        ax.tick_params(axis="y", labelsize=7)
+        fig.tight_layout()
+        st.pyplot(fig)
+        st.caption(
+            "Afghanistan locations (AF) consistently have the most valid readings (dry climate, "
+            "few clouds); Netherlands (NE) and New Zealand locations tend to have fewer "
+            "(cloudier, maritime climate) -- this is the same effect discussed in the README's "
+            "cross-country comparison."
+        )
+
+        st.subheader("Days between two consecutive usable satellite readings")
+        gap_counts = raw_sat["gap_days"].dropna().value_counts().sort_index()
+        gap_counts.index = gap_counts.index.astype(int).astype(str) + "d"
+        st.bar_chart(gap_counts)
+        st.caption(
+            "Most consecutive readings are exactly 16 days apart -- the normal cadence. Bars at "
+            "32, 48, 64+ days are stretches where one or more whole 16-day windows had zero "
+            "cloud-free pixels in a row and got skipped -- longest gap in this dataset: "
+            f"{int(raw_sat['gap_days'].max())} days."
+        )
 
 
 if __name__ == "__main__":

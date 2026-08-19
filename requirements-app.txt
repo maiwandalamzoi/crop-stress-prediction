@@ -1,5 +1,5 @@
 # Trimmed dependency set for deploying app_streamlit.py only (e.g. Streamlit
-# Community Cloud). Excludes earthengine-api/matplotlib/requests, which the
+# Community Cloud). Excludes earthengine-api/requests, which the
 # extraction/training scripts need but the app itself does not import.
 # scikit-learn and xgboost are still required here even though the app
 # doesn't import them directly -- joblib.load() needs them to unpickle the
@@ -8,6 +8,7 @@ pandas>=2.0
 numpy>=1.26
 scikit-learn>=1.4
 xgboost>=2.0
+matplotlib>=3.8
 joblib>=1.3
 streamlit>=1.30
 folium>=0.15
