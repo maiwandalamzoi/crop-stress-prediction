@@ -1,8 +1,15 @@
 earthengine-api>=1.0
 pandas>=2.0
 numpy>=1.26
-scikit-learn>=1.4
-xgboost>=2.0
+# Pinned exactly (not >=): the committed models/*.joblib were trained with
+# these versions. If you only run extract_*.py + build_features.py + train.py
+# yourself, any recent version works fine since you re-pickle your own models --
+# but the README's "skip straight to streamlit run" path re-uses the committed
+# models, which a newer scikit-learn is not guaranteed to unpickle correctly
+# (confirmed via a real InconsistentVersionWarning against 1.9.0). Update this
+# pin if you retrain and recommit new models.
+scikit-learn==1.8.0
+xgboost==3.2.0
 requests>=2.31
 matplotlib>=3.8
 shap>=0.45
